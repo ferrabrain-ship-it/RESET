@@ -41,6 +41,11 @@ const publicClient = createPublicClient({
   ]),
 })
 
+const sendClient = createPublicClient({
+  chain: base,
+  transport: http(env.rpcPrimary),
+})
+
 const walletClient = createWalletClient({
   account,
   chain: base,
@@ -59,56 +64,117 @@ function log(message: string, extra?: Record<string, unknown>) {
   console.log(`[round-resetter] ${message}`)
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isRetryableNonceError(message: string) {
+  const normalized = message.toLowerCase()
+  return (
+    normalized.includes('replacement transaction underpriced') ||
+    normalized.includes('nonce too low') ||
+    normalized.includes('already known')
+  )
+}
+
 async function sendReset(currentRoundId: bigint) {
-  const request = await publicClient.simulateContract({
-    address: CONTRACTS.gridMining,
-    abi: gridMiningAbi,
-    functionName: 'reset',
-    account,
-  })
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const nonce = await sendClient.getTransactionCount({
+        address: account.address,
+        blockTag: 'pending',
+      })
 
-  const hash = await walletClient.writeContract(request.request)
-  lastSubmittedAt = Date.now()
+      const request = await publicClient.simulateContract({
+        address: CONTRACTS.gridMining,
+        abi: gridMiningAbi,
+        functionName: 'reset',
+        account,
+        nonce,
+      })
 
-  log('reset submitted', {
-    roundId: currentRoundId.toString(),
-    txHash: hash,
-  })
+      const hash = await walletClient.writeContract({
+        ...request.request,
+        nonce,
+      })
+      lastSubmittedAt = Date.now()
 
-  const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      log('reset submitted', {
+        roundId: currentRoundId.toString(),
+        txHash: hash,
+        nonce,
+        attempt,
+      })
 
-  log('reset confirmed', {
-    roundId: currentRoundId.toString(),
-    txHash: hash,
-    status: receipt.status,
-  })
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+
+      log('reset confirmed', {
+        roundId: currentRoundId.toString(),
+        txHash: hash,
+        status: receipt.status,
+      })
+      return
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (attempt < 3 && isRetryableNonceError(message)) {
+        log('retrying reset after nonce error', { attempt, error: message })
+        await sleep(1200)
+        continue
+      }
+      throw error
+    }
+  }
 }
 
 async function sendEmergencyReset(currentRoundId: bigint, vrfRequestId: bigint) {
-  const request = await publicClient.simulateContract({
-    address: CONTRACTS.gridMining,
-    abi: gridMiningAbi,
-    functionName: 'emergencyResetVRF',
-    account,
-  })
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const nonce = await sendClient.getTransactionCount({
+        address: account.address,
+        blockTag: 'pending',
+      })
 
-  const hash = await walletClient.writeContract(request.request)
-  lastSubmittedAt = Date.now()
+      const request = await publicClient.simulateContract({
+        address: CONTRACTS.gridMining,
+        abi: gridMiningAbi,
+        functionName: 'emergencyResetVRF',
+        account,
+        nonce,
+      })
 
-  log('emergencyResetVRF submitted', {
-    roundId: currentRoundId.toString(),
-    vrfRequestId: vrfRequestId.toString(),
-    txHash: hash,
-  })
+      const hash = await walletClient.writeContract({
+        ...request.request,
+        nonce,
+      })
+      lastSubmittedAt = Date.now()
 
-  const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      log('emergencyResetVRF submitted', {
+        roundId: currentRoundId.toString(),
+        vrfRequestId: vrfRequestId.toString(),
+        txHash: hash,
+        nonce,
+        attempt,
+      })
 
-  log('emergencyResetVRF confirmed', {
-    roundId: currentRoundId.toString(),
-    vrfRequestId: vrfRequestId.toString(),
-    txHash: hash,
-    status: receipt.status,
-  })
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+
+      log('emergencyResetVRF confirmed', {
+        roundId: currentRoundId.toString(),
+        vrfRequestId: vrfRequestId.toString(),
+        txHash: hash,
+        status: receipt.status,
+      })
+      return
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (attempt < 3 && isRetryableNonceError(message)) {
+        log('retrying emergencyResetVRF after nonce error', { attempt, error: message })
+        await sleep(1200)
+        continue
+      }
+      throw error
+    }
+  }
 }
 
 async function tick() {
@@ -179,6 +245,10 @@ async function tick() {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    if (isRetryableNonceError(message)) {
+      // Brief backoff to avoid spamming same nonce conflict across ticks.
+      lastSubmittedAt = Date.now()
+    }
     log('tick failed', { error: message })
   } finally {
     isTickRunning = false

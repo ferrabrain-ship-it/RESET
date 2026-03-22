@@ -14,7 +14,7 @@ export const env = {
   rpcFallback2: process.env.RPC_URL_FALLBACK_2 || 'https://rpc.ankr.com/base',
   rpcFallback3: process.env.RPC_URL_FALLBACK_3 || 'https://base-rpc.publicnode.com',
   resetterPrivateKey: requireEnv('RESETTER_PRIVATE_KEY') as `0x${string}`,
-  pollIntervalMs: Number(process.env.RESETTER_POLL_INTERVAL_MS || 3000),
-  minTxGapMs: Number(process.env.RESETTER_MIN_TX_GAP_MS || 2500),
+  pollIntervalMs: Number(process.env.RESETTER_POLL_INTERVAL_MS || 1000),
+  minTxGapMs: Number(process.env.RESETTER_MIN_TX_GAP_MS || 1000),
   vrfTimeoutMs: Number(process.env.RESETTER_VRF_TIMEOUT_MS || 3600000),
 }
