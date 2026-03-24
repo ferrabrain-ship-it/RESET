@@ -143,12 +143,18 @@ async function sendReset(currentRoundId: bigint) {
         functionName: 'reset',
         account,
         nonce,
+        type: 'eip1559',
         ...feeOverrides,
       })
 
       const hash = await walletClient.writeContract({
-        ...request.request,
+        address: CONTRACTS.gridMining,
+        abi: gridMiningAbi,
+        functionName: 'reset',
+        account,
         nonce,
+        gas: request.request.gas,
+        type: 'eip1559',
         ...feeOverrides,
       })
       lastSubmittedAt = Date.now()
@@ -197,12 +203,18 @@ async function sendEmergencyReset(currentRoundId: bigint, vrfRequestId: bigint) 
         functionName: 'emergencyResetVRF',
         account,
         nonce,
+        type: 'eip1559',
         ...feeOverrides,
       })
 
       const hash = await walletClient.writeContract({
-        ...request.request,
+        address: CONTRACTS.gridMining,
+        abi: gridMiningAbi,
+        functionName: 'emergencyResetVRF',
+        account,
         nonce,
+        gas: request.request.gas,
+        type: 'eip1559',
         ...feeOverrides,
       })
       lastSubmittedAt = Date.now()
