@@ -3,7 +3,9 @@ import {
   createWalletClient,
   fallback,
   formatEther,
+  formatUnits,
   http,
+  parseGwei,
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
@@ -54,6 +56,9 @@ const walletClient = createWalletClient({
 
 let isTickRunning = false
 let lastSubmittedAt = 0
+const BPS = 10_000n
+const minMaxFeePerGas = parseGwei(env.minMaxFeeGwei)
+const minPriorityFeePerGas = parseGwei(env.minPriorityFeeGwei)
 
 function log(message: string, extra?: Record<string, unknown>) {
   if (extra) {
@@ -72,9 +77,55 @@ function isRetryableNonceError(message: string) {
   const normalized = message.toLowerCase()
   return (
     normalized.includes('replacement transaction underpriced') ||
+    normalized.includes('replacement fee too low') ||
+    normalized.includes('transaction underpriced') ||
     normalized.includes('nonce too low') ||
-    normalized.includes('already known')
+    normalized.includes('already known') ||
+    normalized.includes('max fee per gas less than block base fee') ||
+    normalized.includes('fee cap less than block base fee')
   )
+}
+
+function applyBps(value: bigint, bps: bigint) {
+  if (value === 0n) return 0n
+  return (value * bps + (BPS - 1n)) / BPS
+}
+
+async function getFeeOverrides(attempt: number) {
+  let baseMaxFeePerGas: bigint | undefined
+  let basePriorityFeePerGas: bigint | undefined
+
+  try {
+    const feeData = await sendClient.estimateFeesPerGas({ type: 'eip1559' })
+    baseMaxFeePerGas = feeData.maxFeePerGas ?? feeData.gasPrice
+    basePriorityFeePerGas = feeData.maxPriorityFeePerGas
+  } catch {
+    // fallback below
+  }
+
+  if (!baseMaxFeePerGas) {
+    baseMaxFeePerGas = await sendClient.getGasPrice()
+  }
+  if (!basePriorityFeePerGas) {
+    basePriorityFeePerGas = minPriorityFeePerGas
+  }
+
+  const bumpBps = BigInt(env.gasBumpBps + (attempt - 1) * env.gasRetryStepBps)
+
+  let maxFeePerGas = applyBps(baseMaxFeePerGas, bumpBps)
+  let maxPriorityFeePerGas = applyBps(basePriorityFeePerGas, bumpBps)
+
+  if (maxFeePerGas < minMaxFeePerGas) {
+    maxFeePerGas = minMaxFeePerGas
+  }
+  if (maxPriorityFeePerGas < minPriorityFeePerGas) {
+    maxPriorityFeePerGas = minPriorityFeePerGas
+  }
+  if (maxFeePerGas <= maxPriorityFeePerGas) {
+    maxFeePerGas = maxPriorityFeePerGas + 1n
+  }
+
+  return { maxFeePerGas, maxPriorityFeePerGas }
 }
 
 async function sendReset(currentRoundId: bigint) {
@@ -84,6 +135,7 @@ async function sendReset(currentRoundId: bigint) {
         address: account.address,
         blockTag: 'pending',
       })
+      const feeOverrides = await getFeeOverrides(attempt)
 
       const request = await publicClient.simulateContract({
         address: CONTRACTS.gridMining,
@@ -91,11 +143,13 @@ async function sendReset(currentRoundId: bigint) {
         functionName: 'reset',
         account,
         nonce,
+        ...feeOverrides,
       })
 
       const hash = await walletClient.writeContract({
         ...request.request,
         nonce,
+        ...feeOverrides,
       })
       lastSubmittedAt = Date.now()
 
@@ -104,6 +158,8 @@ async function sendReset(currentRoundId: bigint) {
         txHash: hash,
         nonce,
         attempt,
+        maxFeePerGasGwei: formatUnits(feeOverrides.maxFeePerGas, 9),
+        maxPriorityFeePerGasGwei: formatUnits(feeOverrides.maxPriorityFeePerGas, 9),
       })
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
@@ -133,6 +189,7 @@ async function sendEmergencyReset(currentRoundId: bigint, vrfRequestId: bigint) 
         address: account.address,
         blockTag: 'pending',
       })
+      const feeOverrides = await getFeeOverrides(attempt)
 
       const request = await publicClient.simulateContract({
         address: CONTRACTS.gridMining,
@@ -140,11 +197,13 @@ async function sendEmergencyReset(currentRoundId: bigint, vrfRequestId: bigint) 
         functionName: 'emergencyResetVRF',
         account,
         nonce,
+        ...feeOverrides,
       })
 
       const hash = await walletClient.writeContract({
         ...request.request,
         nonce,
+        ...feeOverrides,
       })
       lastSubmittedAt = Date.now()
 
@@ -154,6 +213,8 @@ async function sendEmergencyReset(currentRoundId: bigint, vrfRequestId: bigint) 
         txHash: hash,
         nonce,
         attempt,
+        maxFeePerGasGwei: formatUnits(feeOverrides.maxFeePerGas, 9),
+        maxPriorityFeePerGasGwei: formatUnits(feeOverrides.maxPriorityFeePerGas, 9),
       })
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
